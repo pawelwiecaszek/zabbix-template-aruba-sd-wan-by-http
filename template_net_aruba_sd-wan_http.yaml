@@ -1,0 +1,587 @@
+zabbix_export:
+  version: "7.0"
+  template_groups:
+    - uuid: 36bff6c29af64692839d077febfc7079
+      name: "Templates/Network devices"
+  templates:
+    - uuid: 09c572d9efb74a759c241c43f2dd6b66
+      template: "Zabbix Aruba SD-WAN by HTTP"
+      name: "Zabbix Aruba SD-WAN by HTTP"
+      groups:
+        - name: "Templates/Network devices"
+      items:
+        - uuid: ffd890ef03814066990ea57bbc589618
+          name: "Aruba SD-WAN - Get data"
+          type: SCRIPT
+          key: aruba.sd-wan.get_data
+          delay: 2m
+          history: 1d
+          value_type: TEXT
+          trends: "0"
+          params: |
+            var params = JSON.parse(value);
+            var request = new HttpRequest();
+            const epoch_start = Math.floor(Date.now() / 1000) - 120;
+            const epoch_stop = Math.floor(Date.now() / 1000);
+
+            request.addHeader('Content-Type: application/json');
+            request.addHeader('X-Auth-Token: ' + params.token);
+
+            var response,
+                output,
+                error_msg = '',
+            	gms = '',
+            	metrics = [],
+                appliances = [];
+
+            function flattenArrayOfArrays(arr) {
+                var result = [];
+                for (var i = 0; i < arr.length; i++) {
+                    var inner = arr[i];
+                    if (Object.prototype.toString.call(inner) === '[object Array]') {
+                        for (var j = 0; j < inner.length; j++) {
+                            result.push(inner[j]);
+                        }
+                    }
+                }
+                return result;
+            }
+
+            function getHttpData(url, body) {
+                response = request.get(encodeURI(url), body);
+                Zabbix.log(4, '[ Aruba SD-WAN API ] [ ' + url + ' ] Received response with status code ' + request.getStatus() + ': ' + response);
+
+                if (response !== null) {
+                    try {
+                        response = JSON.parse(response);
+                    }
+                    catch (error) {
+                        throw 'Failed to parse response received from SD-WAN API. Check debug log for more information. Response: ' + response + ' URL: ' + url;
+                    }
+                }
+
+                if (request.getStatus() !== 200) {
+                    if (response.error && response.error.message) {
+                        throw response.error.message;
+                    } else {
+                        throw 'Failed to receive data: invalid response status code: ' + request.getStatus() + ' url:' + url;
+                    }
+                }
+
+                if (typeof (response) !== 'object' || response === null) {
+                    throw 'Cannot process response data: received data is not an object.';
+                }
+
+                return response;
+            };
+
+            function postHttpData(url, body) {
+                response = request.post(encodeURI(url), body);
+                Zabbix.log(4, '[ Aruba SD-WAN API ] [ ' + url + ' ] Received response with status code ' + request.getStatus() + ': ' + response);
+
+                if (response !== null) {
+                    try {
+                        response = JSON.parse(response);
+                    }
+                    catch (error) {
+                        throw 'Failed to parse response received from SD-WAN API. Check debug log for more information. Response: ' + response;
+                    }
+                }
+
+                if (request.getStatus() !== 200) {
+                    if (response.error && response.error.message) {
+                        throw response.error.message;
+                    } else {
+                        throw 'Failed to receive data: invalid response status code.';
+                    }
+                }
+
+                if (typeof (response) !== 'object' || response === null) {
+                    throw 'Cannot process response data: received data is not an object.';
+                }
+
+                return response;
+            };
+
+            try {
+                appliances = getHttpData('https://' + params.host + ':/gms/rest/appliance', '{}');
+            } catch (error) {
+                error_msg += 'Appliances error: ' + error;
+            };
+
+            for (var e in appliances) {
+            	var appliance_id = appliances[e].id
+            	var appliance_hostname = appliances[e].hostName
+
+            	try {
+            		responselocation = getHttpData('https://' + params.host + ':/gms/rest/appliance/rest?nePk=' + appliances[e].id + '&url=snmp', {});
+            		appliances[e]["location"] = responselocation.syslocation;
+            		coordinateslocation = getHttpData('https://' + params.host + ':/gms/rest/location/addressToLocation?address=' + responselocation.syslocation, {});
+            		appliances[e]["latitude"] = coordinateslocation[0]["geometry"]["location"]["lat"];
+            		appliances[e]["longitude"] = coordinateslocation[0]["geometry"]["location"]["lng"];
+            	} catch (error) {
+            		Zabbix.log(3, '[ Aruba SD-WAN API ] [ location ] Received error in response: '+ error);
+                	appliances[e]["location"] = 'error';
+                	appliances[e]["latitude"] = 'error';
+            		appliances[e]["longitude"] = 'error';
+            	};
+
+            	try {
+            		metricsdata = getHttpData('https://' + params.host + ':/gms/rest/stats/timeseries/interface?nePk=' + appliances[e].id + '&startTime=' + epoch_start + '&endTime=' + epoch_stop + '&granularity=minute&trafficType=all_traffic', {});
+            		var metricsarray = [];		
+
+            		for (var metric in metricsdata) {
+            			metricsdata[metric]["appliance_id"] = appliances[e].id
+            			metricsdata[metric]["hostName"] = appliances[e].hostName
+            			metricsdata[metric]["id"] = appliances[e].id + '-' + metricsdata[metric].interfaceName
+            		}
+
+            		metrics[e] = metricsdata;
+            	} catch (error) {
+            		Zabbix.log(3, '[ Aruba SD-WAN API ] [ metrics ] Received error in response: '+ error);
+                	metrics[e] = 'error';
+            	};
+            }
+
+            try {
+            	gms = getHttpData('https://' + params.host + ':/gms/rest/gmsserver/info', '{}');
+            } catch (error) {
+                error_msg += 'GMS error: ' + error;
+            };
+
+
+            return JSON.stringify({
+                'appliances': appliances,
+            	'metrics': flattenArrayOfArrays(metrics),
+            	'gms': gms,
+                'error': error_msg.toString() 
+            });
+          parameters:
+            - name: host
+              value: "{HOST.HOST}"
+            - name: token
+              value: "{$API_KEY}"
+        - uuid: 4c48b9c7ffc44755ba7484c39deebbbc
+          name: "Aruba SD-WAN - GMS server hostName"
+          type: DEPENDENT
+          key: aruba.sd-wan.gmsserver.hostName
+          delay: "0"
+          value_type: TEXT
+          trends: "0"
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.gms.hostName
+          master_item:
+            key: aruba.sd-wan.get_data
+        - uuid: 6d1742db9bc1428fa0993e5e37c2454f
+          name: "Aruba SD-WAN - GMS server numActiveUsers"
+          type: DEPENDENT
+          key: aruba.sd-wan.gmsserver.numActiveUsers
+          delay: "0"
+          value_type: TEXT
+          trends: "0"
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.gms.numActiveUsers
+          master_item:
+            key: aruba.sd-wan.get_data
+        - uuid: 104d30f501d94deca8018753f18a8c20
+          name: "Aruba SD-WAN - GMS server release"
+          type: DEPENDENT
+          key: aruba.sd-wan.gmsserver.release
+          delay: "0"
+          value_type: TEXT
+          trends: "0"
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.gms.release
+          master_item:
+            key: aruba.sd-wan.get_data
+        - uuid: 4791358e82c545aaa417361e99d52a14
+          name: "Aruba SD-WAN - GMS server uptime"
+          type: DEPENDENT
+          key: aruba.sd-wan.gmsserver.uptime
+          delay: "0"
+          value_type: TEXT
+          trends: "0"
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.gms.uptime
+          master_item:
+            key: aruba.sd-wan.get_data
+      discovery_rules:
+        - uuid: 071d4f95d81642f88604af2b9e78f421
+          name: "Aruba SD-WAN - appliance"
+          type: DEPENDENT
+          key: aruba.sd-wan.appliance
+          delay: "0"
+          item_prototypes:
+            - uuid: 08a04346e12a48848e478d975dca7eb4
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} groupId"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},groupid]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].groupId.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+            - uuid: 8fedf6dafc5340ea9baa30df720d4665
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} has unsaved changes"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},has_unsaved_changes]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].hasUnsavedChanges.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+              trigger_prototypes:
+                - uuid: 3b661b8615e8428d9edd8a1ea37f6a72
+                  expression: 'last(/Zabbix Aruba SD-WAN by HTTP/aruba.sd-wan.appliance[{#APPLIANCE.ID},has_unsaved_changes],#1)<>"false"'
+                  name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} has unsaved changes"
+                  priority: WARNING
+            - uuid: ccc516f4550a472ba9dd73b4ec1e08ff
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} hostName"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},hostname]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].hostName.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+            - uuid: 2a9482a3c9144093a5121ef74afb84d8
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} ip"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},ip]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].ip.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+            - uuid: be8f49d71ed84941839cf5f989c5fbf4
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} latitude"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},latitude]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].latitude.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+            - uuid: 401204ca1a98474a8d01440351784537
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} location"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},location]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].location.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+            - uuid: 9e283a4f06a2442da775f8f07eefcbcf
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} longitude"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},longitude]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].longitude.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+            - uuid: ac4f28ec89bd47b6b8a5d25beb7ca1c6
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} model"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},model]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].model.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+            - uuid: e966b63f6e754d0e93680dc472863a96
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} reboot required"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},reboot_required]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].rebootRequired.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+              trigger_prototypes:
+                - uuid: 06324123f15c49e29dcb80c900c0a8ad
+                  expression: 'last(/Zabbix Aruba SD-WAN by HTTP/aruba.sd-wan.appliance[{#APPLIANCE.ID},reboot_required],#1)<>"false"'
+                  name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} reboot required"
+                  priority: WARNING
+            - uuid: b9a63b5caea44c37afa55889fc7723ff
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} site"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},site]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].site.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+            - uuid: 80f21d890d7c43a2bd056e2d3b6cd6ba
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} softwareVersion"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},softwareversion]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].softwareVersion.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+              trigger_prototypes:
+                - uuid: c917da176dc742b7abfc1a524c0c10d0
+                  expression: "change(/Zabbix Aruba SD-WAN by HTTP/aruba.sd-wan.appliance[{#APPLIANCE.ID},softwareversion])=1"
+                  name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} software version changed"
+                  priority: INFO
+            - uuid: e35a86050829484385f9538c033d3908
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} state"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},state]"
+              delay: "0"
+              value_type: TEXT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].state.first()'
+                - type: STR_REPLACE
+                  parameters:
+                    - "1"
+                    - Normal
+                - type: STR_REPLACE
+                  parameters:
+                    - "2"
+                    - "Not Connected"
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
+              trigger_prototypes:
+                - uuid: 0d4e9b55a00f48fc9e79b904a2200a4a
+                  expression: 'last(/Zabbix Aruba SD-WAN by HTTP/aruba.sd-wan.appliance[{#APPLIANCE.ID},state],#1)<>"Normal"'
+                  name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} state"
+                  priority: HIGH
+          master_item:
+            key: aruba.sd-wan.get_data
+          lld_macro_paths:
+            - lld_macro: "{#APPLIANCE.GROUPID}"
+              path: $.groupId
+            - lld_macro: "{#APPLIANCE.HASUNSAVEDCHANGES}"
+              path: $.hasUnsavedChanges
+            - lld_macro: "{#APPLIANCE.HOSTNAME}"
+              path: $.hostName
+            - lld_macro: "{#APPLIANCE.ID}"
+              path: $.id
+            - lld_macro: "{#APPLIANCE.MODEL}"
+              path: $.model
+            - lld_macro: "{#APPLIANCE.MODE}"
+              path: $.mode
+            - lld_macro: "{#APPLIANCE.PLATFORM}"
+              path: $.platform
+            - lld_macro: "{#APPLIANCE.REBOOTREQUIRED}"
+              path: $.rebootRequired
+            - lld_macro: "{#APPLIANCE.SITEPRIORITY}"
+              path: $.sitePriority
+            - lld_macro: "{#APPLIANCE.SITE}"
+              path: $.site
+            - lld_macro: "{#APPLIANCE.SOFTWAREVERSION}"
+              path: $.softwareVersion
+            - lld_macro: "{#APPLIANCE.STATE}"
+              path: $.state
+            - lld_macro: "{#APPLIANCE.SYSTEMBANDWIDTH}"
+              path: $.systemBandwidth
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.appliances
+        - uuid: 35c729507df348a2a79f1b5d994522f5
+          name: "Aruba SD-WAN - interface"
+          type: DEPENDENT
+          key: aruba.sd-wan.interface
+          delay: "0"
+          item_prototypes:
+            - uuid: b300c3a2f7f042749a846d32e69c597e
+              name: "Aruba SD-WAN - interface {#INTERFACE.NAME} - {#INTERFACE.APPLIANCE_HOSTNAME} - rx_bytes"
+              type: DEPENDENT
+              key: "aruba.sd-wan.interface[{#INTERFACE.ID},rx_bytes]"
+              delay: "0"
+              value_type: FLOAT
+              units: bytes
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.metrics
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#INTERFACE.ID}")].tx_bytes.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#INTERFACE.APPLIANCE_HOSTNAME}"
+            - uuid: 9d9e384e8b864735b59be360d8ca3a69
+              name: "Aruba SD-WAN - interface {#INTERFACE.NAME} - {#INTERFACE.APPLIANCE_HOSTNAME} - tx_bytes"
+              type: DEPENDENT
+              key: "aruba.sd-wan.interface[{#INTERFACE.ID},tx_bytes]"
+              delay: "0"
+              value_type: FLOAT
+              units: bytes
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.metrics
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#INTERFACE.ID}")].rx_bytes.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#INTERFACE.APPLIANCE_HOSTNAME}"
+          graph_prototypes:
+            - uuid: ee981284c35c4910abdf91dbdd072ae0
+              name: "Interface {#INTERFACE.NAME} - {#INTERFACE.APPLIANCE_HOSTNAME} - usage"
+              show_triggers: "NO"
+              graph_items:
+                - color: 199C0D
+                  calc_fnc: ALL
+                  item:
+                    host: "Zabbix Aruba SD-WAN by HTTP"
+                    key: "aruba.sd-wan.interface[{#INTERFACE.ID},rx_bytes]"
+                - sortorder: "1"
+                  color: F63100
+                  calc_fnc: ALL
+                  item:
+                    host: "Zabbix Aruba SD-WAN by HTTP"
+                    key: "aruba.sd-wan.interface[{#INTERFACE.ID},tx_bytes]"
+          master_item:
+            key: aruba.sd-wan.get_data
+          lld_macro_paths:
+            - lld_macro: "{#INTERFACE.APPLIANCE_HOSTNAME}"
+              path: $.hostName
+            - lld_macro: "{#INTERFACE.ID}"
+              path: $.id
+            - lld_macro: "{#INTERFACE.NAME}"
+              path: $.interfaceName
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.metrics
+      macros:
+        - macro: "{$API_KEY}"
+          type: SECRET_TEXT
