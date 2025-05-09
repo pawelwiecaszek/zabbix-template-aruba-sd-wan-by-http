@@ -327,7 +327,7 @@ zabbix_export:
               type: DEPENDENT
               key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},latitude]"
               delay: "0"
-              value_type: TEXT
+              value_type: FLOAT
               trends: "0"
               preprocessing:
                 - type: JSONPATH
@@ -365,7 +365,7 @@ zabbix_export:
               type: DEPENDENT
               key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},longitude]"
               delay: "0"
-              value_type: TEXT
+              value_type: FLOAT
               trends: "0"
               preprocessing:
                 - type: JSONPATH
@@ -506,6 +506,25 @@ zabbix_export:
                   tags:
                     - tag: Appliance
                       value: "{#APPLIANCE.HOSTNAME}"
+            - uuid: 6318cbe7ff054832b65c41c9f4110d75
+              name: "Aruba SD-WAN - appliance {#APPLIANCE.HOSTNAME} state numeric"
+              type: DEPENDENT
+              key: "aruba.sd-wan.appliance[{#APPLIANCE.ID},state_numeric]"
+              delay: "0"
+              value_type: FLOAT
+              trends: "0"
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - $.appliances
+                - type: JSONPATH
+                  parameters:
+                    - '$[?(@.id == "{#APPLIANCE.ID}")].state.first()'
+              master_item:
+                key: aruba.sd-wan.get_data
+              tags:
+                - tag: Appliance
+                  value: "{#APPLIANCE.HOSTNAME}"
           master_item:
             key: aruba.sd-wan.get_data
           lld_macro_paths:
